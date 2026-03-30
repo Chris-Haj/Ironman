@@ -93,16 +93,16 @@ def pid_is_alive(pid):
 
 def launch_terminal():
     """
-    Launch a fullscreen welcome screen, then Windows Terminal maximized with 3 vertical panes.
+    Launch a fullscreen welcome screen with TTS, then Windows Terminal maximized with 3 vertical panes.
     Returns the PID of the new WindowsTerminal.exe process, or None if not found.
     """
-    # Write welcome script
+    # Write welcome script fresh each time
     with open(WELCOME_SCRIPT_PATH, "w", encoding="utf-8") as f:
         f.write(WELCOME_SCRIPT)
 
     pids_before = get_wt_pids_before()
 
-    # Step 1: Launch welcome screen (fullscreen, auto-closes after 3s)
+    # Step 1: Launch welcome screen
     welcome_cmd = [
         "wt.exe",
         "--maximized",
@@ -117,8 +117,8 @@ def launch_terminal():
         welcome_cmd, shell=False, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
     )
 
-    # Step 2: Wait for welcome screen to finish (match timeout /t 3 + buffer)
-    time.sleep(4)
+    # Step 2: Wait for TTS + welcome screen to finish (speech ~2s + art + 3s timeout)
+    time.sleep(6)
 
     # Step 3: Launch the actual 3-pane terminal
     cmd = [
@@ -161,14 +161,14 @@ def launch_terminal():
         cmd, shell=False, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
     )
 
-    # Step 4: Detect new WindowsTerminal PID
+    # Step 4: Detect the new WindowsTerminal PID (the 3-pane one)
     deadline = time.time() + WT_SPAWN_WAIT
     while time.time() < deadline:
         time.sleep(0.3)
         pids_after = get_wt_pids_before()
         new_pids = pids_after - pids_before
         if new_pids:
-            pid = max(new_pids)  # Take the latest PID (the 3-pane one)
+            pid = max(new_pids)
             print(f"WindowsTerminal.exe started with PID {pid}")
             return pid
 
