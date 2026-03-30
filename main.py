@@ -15,6 +15,7 @@ import threading
 import numpy as np
 import pyaudio
 import pygame
+from welcome_script import WELCOME_SCRIPT, WELCOME_SCRIPT_PATH
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
@@ -28,6 +29,7 @@ WT_SPAWN_WAIT = (
 )
 POLL_INTERVAL = 1.5  # How often (seconds) to check if the PID is still alive
 VSCODE_DIR = r"C:\\Users\\chris\\Desktop\\VSCodes"
+
 
 subprocess.run(["code", "--trust", VSCODE_DIR])
 
@@ -91,11 +93,34 @@ def pid_is_alive(pid):
 
 def launch_terminal():
     """
-    Launch Windows Terminal maximized with 3 vertical panes.
+    Launch a fullscreen welcome screen, then Windows Terminal maximized with 3 vertical panes.
     Returns the PID of the new WindowsTerminal.exe process, or None if not found.
     """
+    # Write welcome script
+    with open(WELCOME_SCRIPT_PATH, "w", encoding="utf-8") as f:
+        f.write(WELCOME_SCRIPT)
+
     pids_before = get_wt_pids_before()
 
+    # Step 1: Launch welcome screen (fullscreen, auto-closes after 3s)
+    welcome_cmd = [
+        "wt.exe",
+        "--maximized",
+        "new-tab",
+        "--title",
+        "Welcome",
+        "cmd.exe",
+        "/k",
+        WELCOME_SCRIPT_PATH,
+    ]
+    subprocess.Popen(
+        welcome_cmd, shell=False, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+    )
+
+    # Step 2: Wait for welcome screen to finish (match timeout /t 3 + buffer)
+    time.sleep(4)
+
+    # Step 3: Launch the actual 3-pane terminal
     cmd = [
         "wt.exe",
         "--maximized",
@@ -136,14 +161,14 @@ def launch_terminal():
         cmd, shell=False, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
     )
 
-    # Wait for WindowsTerminal.exe to appear, then find the new PID
+    # Step 4: Detect new WindowsTerminal PID
     deadline = time.time() + WT_SPAWN_WAIT
     while time.time() < deadline:
         time.sleep(0.3)
         pids_after = get_wt_pids_before()
         new_pids = pids_after - pids_before
         if new_pids:
-            pid = next(iter(new_pids))
+            pid = max(new_pids)  # Take the latest PID (the 3-pane one)
             print(f"WindowsTerminal.exe started with PID {pid}")
             return pid
 
