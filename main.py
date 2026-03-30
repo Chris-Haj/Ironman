@@ -20,11 +20,16 @@ import pygame
 
 CHUNK = 1024
 RATE = 44100
-THRESHOLD = 2500      # RMS volume to count as a clap (tune to your mic)
-CLAP_WINDOW = 0.8     # Max seconds between two claps
-COOLDOWN = 2.0        # Seconds to ignore after launch
-WT_SPAWN_WAIT = 2.0   # Seconds to wait for WindowsTerminal.exe to appear after wt.exe runs
-POLL_INTERVAL = 1.5   # How often (seconds) to check if the PID is still alive
+THRESHOLD = 2500  # RMS volume to count as a clap (tune to your mic)
+CLAP_WINDOW = 0.8  # Max seconds between two claps
+COOLDOWN = 2.0  # Seconds to ignore after launch
+WT_SPAWN_WAIT = (
+    2.0  # Seconds to wait for WindowsTerminal.exe to appear after wt.exe runs
+)
+POLL_INTERVAL = 1.5  # How often (seconds) to check if the PID is still alive
+VSCODE_DIR = r"C:\\Users\\chris\\Desktop\\VSCodes"
+
+subprocess.run(["code", "--trust", VSCODE_DIR])
 
 # ── Globals ───────────────────────────────────────────────────────────────────
 
@@ -36,6 +41,7 @@ lock = threading.Lock()
 pygame.mixer.init()
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
 
 def get_script_dir():
     return os.path.dirname(os.path.abspath(__file__))
@@ -61,7 +67,8 @@ def get_wt_pids_before():
     """Snapshot all running WindowsTerminal.exe PIDs right now."""
     result = subprocess.run(
         ["tasklist", "/FI", "IMAGENAME eq WindowsTerminal.exe", "/FO", "CSV", "/NH"],
-        capture_output=True, text=True
+        capture_output=True,
+        text=True,
     )
     pids = set()
     for line in result.stdout.strip().splitlines():
@@ -77,8 +84,7 @@ def get_wt_pids_before():
 def pid_is_alive(pid):
     """Return True if a process with this PID is still running."""
     result = subprocess.run(
-        ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
-        capture_output=True, text=True
+        ["tasklist", "/FI", f"PID eq {pid}", "/NH"], capture_output=True, text=True
     )
     return str(pid) in result.stdout
 
@@ -93,11 +99,42 @@ def launch_terminal():
     cmd = [
         "wt.exe",
         "--maximized",
-        "new-tab", "--title", "Claude",  "cmd.exe", "/k", "claude",
-        ";", "split-pane", "--vertical", "--title", "Copilot", "cmd.exe", "/k", "copilot",
-        ";", "split-pane", "--vertical", "--title", "Gemini",  "cmd.exe", "/k", "gemini",
+        "new-tab",
+        "--title",
+        "Claude",
+        "--startingDirectory",
+        VSCODE_DIR,
+        "cmd.exe",
+        "/k",
+        "claude",
+        ";",
+        "split-pane",
+        "--vertical",
+        "--size",
+        "0.6667",
+        "--title",
+        "Copilot",
+        "--startingDirectory",
+        VSCODE_DIR,
+        "cmd.exe",
+        "/k",
+        "copilot",
+        ";",
+        "split-pane",
+        "--vertical",
+        "--size",
+        "0.5",
+        "--title",
+        "Gemini",
+        "--startingDirectory",
+        VSCODE_DIR,
+        "cmd.exe",
+        "/k",
+        "gemini",
     ]
-    subprocess.Popen(cmd, shell=False, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+    subprocess.Popen(
+        cmd, shell=False, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
+    )
 
     # Wait for WindowsTerminal.exe to appear, then find the new PID
     deadline = time.time() + WT_SPAWN_WAIT
@@ -110,7 +147,9 @@ def launch_terminal():
             print(f"WindowsTerminal.exe started with PID {pid}")
             return pid
 
-    print("[warn] Could not detect WindowsTerminal.exe PID — lock will not release automatically.")
+    print(
+        "[warn] Could not detect WindowsTerminal.exe PID — lock will not release automatically."
+    )
     return None
 
 
@@ -186,7 +225,9 @@ try:
                     with lock:
                         terminal_locked = True
                     pid = launch_terminal()
-                    threading.Thread(target=monitor_terminal, args=(pid,), daemon=True).start()
+                    threading.Thread(
+                        target=monitor_terminal, args=(pid,), daemon=True
+                    ).start()
                     last_launch_time = now
                     last_clap_time = 0.0
                 else:
