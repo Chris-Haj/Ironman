@@ -1,9 +1,10 @@
 """
 clap_launcher.py — Double-clap to launch Claude Code
 Launches Windows Terminal maximized with 3 panes: claude | copilot | gemini
-Plays clip.mp3 on launch. Mic detection paused while terminal is alive.
+Plays clip.mp3 via pygame. Mic detection paused until the exact
+WindowsTerminal.exe PID spawned by this script exits.
 
-Requirements: pip install pyaudio numpy
+Requirements: pip install pyaudio numpy pygame
 Windows Terminal (wt.exe) must be installed.
 """
 
@@ -13,116 +14,129 @@ import subprocess
 import threading
 import numpy as np
 import pyaudio
+import pygame
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
 CHUNK = 1024
 RATE = 44100
-THRESHOLD = 2500  # RMS volume to count as a clap (tune to your mic)
-CLAP_WINDOW = 0.8  # Max seconds between two claps
-COOLDOWN = 2.0  # Seconds to ignore after launch
+THRESHOLD = 2500      # RMS volume to count as a clap (tune to your mic)
+CLAP_WINDOW = 0.8     # Max seconds between two claps
+COOLDOWN = 2.0        # Seconds to ignore after launch
+WT_SPAWN_WAIT = 2.0   # Seconds to wait for WindowsTerminal.exe to appear after wt.exe runs
+POLL_INTERVAL = 1.5   # How often (seconds) to check if the PID is still alive
 
 # ── Globals ───────────────────────────────────────────────────────────────────
 
-terminal_proc = None  # The wt.exe process
+terminal_locked = False
 lock = threading.Lock()
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── pygame init ───────────────────────────────────────────────────────────────
 
+pygame.mixer.init()
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def get_script_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
 def play_mp3():
-    """Play clip.mp3 using PowerShell's Windows Media Player (no extra deps)."""
+    """Play clip.mp3 in a daemon thread via pygame."""
     mp3_path = os.path.join(get_script_dir(), "clip.mp3")
     if not os.path.exists(mp3_path):
         print(f"[warn] clip.mp3 not found at {mp3_path}, skipping audio.")
         return
 
-    # Escape backslashes for PowerShell string
-    ps_path = mp3_path.replace("\\", "\\\\")
-    ps_script = (
-        f"$player = New-Object System.Windows.Media.MediaPlayer;"
-        f"$player.Open([Uri]::new('{ps_path}'));"
-        f"Start-Sleep -Milliseconds 500;"  # give it time to load
-        f"$player.Play();"
-        f"Start-Sleep -Seconds 10;"  # keep process alive while playing
-        f"$player.Close()"
-    )
-
     def _play():
-        subprocess.Popen(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-WindowStyle",
-                "Hidden",
-                "-Command",
-                ps_script,
-            ],
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
+        pygame.mixer.music.load(mp3_path)
+        pygame.mixer.music.play()
+        while pygame.mixer.music.get_busy():
+            time.sleep(0.1)
 
     threading.Thread(target=_play, daemon=True).start()
 
 
+def get_wt_pids_before():
+    """Snapshot all running WindowsTerminal.exe PIDs right now."""
+    result = subprocess.run(
+        ["tasklist", "/FI", "IMAGENAME eq WindowsTerminal.exe", "/FO", "CSV", "/NH"],
+        capture_output=True, text=True
+    )
+    pids = set()
+    for line in result.stdout.strip().splitlines():
+        parts = line.strip().strip('"').split('","')
+        if len(parts) >= 2:
+            try:
+                pids.add(int(parts[1]))
+            except ValueError:
+                pass
+    return pids
+
+
+def pid_is_alive(pid):
+    """Return True if a process with this PID is still running."""
+    result = subprocess.run(
+        ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+        capture_output=True, text=True
+    )
+    return str(pid) in result.stdout
+
+
 def launch_terminal():
     """
-    Launch Windows Terminal maximized with 3 vertical panes:
-      left: claude | middle: copilot | right: gemini
-    Returns the Popen process.
+    Launch Windows Terminal maximized with 3 vertical panes.
+    Returns the PID of the new WindowsTerminal.exe process, or None if not found.
     """
+    pids_before = get_wt_pids_before()
+
     cmd = [
         "wt.exe",
         "--maximized",
-        "new-tab",
-        "--title",
-        "Claude",
-        "cmd.exe",
-        "/k",
-        "claude",
-        ";",
-        "split-pane",
-        "--vertical",
-        "--title",
-        "Copilot",
-        "cmd.exe",
-        "/k",
-        "copilot",
-        ";",
-        "split-pane",
-        "--vertical",
-        "--title",
-        "Gemini",
-        "cmd.exe",
-        "/k",
-        "gemini",
+        "new-tab", "--title", "Claude",  "cmd.exe", "/k", "claude",
+        ";", "split-pane", "--vertical", "--title", "Copilot", "cmd.exe", "/k", "copilot",
+        ";", "split-pane", "--vertical", "--title", "Gemini",  "cmd.exe", "/k", "gemini",
     ]
-    return subprocess.Popen(
-        cmd, shell=False, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP
-    )
+    subprocess.Popen(cmd, shell=False, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+
+    # Wait for WindowsTerminal.exe to appear, then find the new PID
+    deadline = time.time() + WT_SPAWN_WAIT
+    while time.time() < deadline:
+        time.sleep(0.3)
+        pids_after = get_wt_pids_before()
+        new_pids = pids_after - pids_before
+        if new_pids:
+            pid = next(iter(new_pids))
+            print(f"WindowsTerminal.exe started with PID {pid}")
+            return pid
+
+    print("[warn] Could not detect WindowsTerminal.exe PID — lock will not release automatically.")
+    return None
+
+
+def monitor_terminal(pid):
+    """Poll until the specific PID is gone, then release the mic lock."""
+    global terminal_locked
+
+    if pid is None:
+        # Fallback: just wait a fixed time then release
+        time.sleep(30)
+        with lock:
+            terminal_locked = False
+        print("Lock released (fallback timeout).")
+        return
+
+    while pid_is_alive(pid):
+        time.sleep(POLL_INTERVAL)
+
+    with lock:
+        terminal_locked = False
+    print(f"WindowsTerminal.exe (PID {pid}) closed — mic detection re-enabled.")
 
 
 def is_terminal_alive():
-    global terminal_proc
     with lock:
-        if terminal_proc is None:
-            return False
-        if terminal_proc.poll() is not None:
-            terminal_proc = None
-            return False
-        return True
-
-
-def monitor_terminal(proc):
-    """Wait for wt.exe to exit, then re-enable mic detection."""
-    global terminal_proc
-    proc.wait()
-    with lock:
-        terminal_proc = None
-    print("Terminal closed — mic detection re-enabled.")
+        return terminal_locked
 
 
 # ── Audio setup ───────────────────────────────────────────────────────────────
@@ -154,7 +168,7 @@ try:
 
         now = time.time()
 
-        # Mic detection is locked while terminal session is alive
+        # Mic detection locked while terminal is open
         if is_terminal_alive():
             in_clap = False
             continue
@@ -169,12 +183,10 @@ try:
                     # Second clap within window → launch
                     print("Double-clap! Launching terminals...")
                     play_mp3()
-                    proc = launch_terminal()
                     with lock:
-                        terminal_proc = proc
-                    threading.Thread(
-                        target=monitor_terminal, args=(proc,), daemon=True
-                    ).start()
+                        terminal_locked = True
+                    pid = launch_terminal()
+                    threading.Thread(target=monitor_terminal, args=(pid,), daemon=True).start()
                     last_launch_time = now
                     last_clap_time = 0.0
                 else:
@@ -189,3 +201,4 @@ finally:
     stream.stop_stream()
     stream.close()
     pa.terminate()
+    pygame.mixer.quit()
